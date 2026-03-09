@@ -2,6 +2,8 @@
 
 Thoughtful ping with a live TUI, better per-host stats, and a btop-style grid graph.
 
+<img width="3146" height="2158" alt="CleanShot 2026-03-09 at 11 37 23@2x" src="https://github.com/user-attachments/assets/e83665d8-b0c8-48f5-8d34-4735aca9178f" />
+
 ## Installation
 
 ```bash
