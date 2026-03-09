@@ -25,22 +25,17 @@ func renderPanel(tracker stats.Tracker, width int, graphHeight int) string {
 	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(color)
 	subtle := lipgloss.NewStyle().Foreground(lipgloss.Color("#94A3B8"))
 
-	header := titleStyle.Render(strings.ToUpper(tracker.Target))
+	header := titleStyle.Render(tracker.Target)
 	status := renderStatusBadge(tracker.Status(), color)
-	meta := subtle.Render(tracker.Subtitle())
-	statLine := subtle.Render(fmt.Sprintf(
-		"now %s  avg %s  best %s  worst %s  jitter %s",
-		stats.FormatDuration(tracker.Current),
-		stats.FormatDuration(tracker.Avg()),
-		stats.FormatDuration(tracker.Min),
-		stats.FormatDuration(tracker.Max),
-		stats.FormatDuration(tracker.Jitter()),
-	))
+	meta := subtle.Render(renderMeta(tracker))
+	flow := renderFlow(tracker, width-4, color)
+	statLine := renderStatLine(tracker)
 	graph := renderGraph(tracker, width-4, graphHeight, color)
 
 	body := strings.Join([]string{
 		lipgloss.JoinHorizontal(lipgloss.Center, header, " ", status),
 		meta,
+		flow,
 		statLine,
 		graph,
 		renderFooter(tracker),
@@ -52,6 +47,26 @@ func renderPanel(tracker stats.Tracker, width int, graphHeight int) string {
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(color).
 		Render(body)
+}
+
+func renderMeta(tracker stats.Tracker) string {
+	if tracker.Addr == "" || tracker.Addr == tracker.Target {
+		return fmt.Sprintf("target %s", tracker.Target)
+	}
+	return fmt.Sprintf("target %s  resolved %s", tracker.Target, tracker.Addr)
+}
+
+func renderStatLine(tracker stats.Tracker) string {
+	label := lipgloss.NewStyle().Foreground(lipgloss.Color("#64748B"))
+	value := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#E2E8F0"))
+	parts := []string{
+		label.Render("now") + " " + value.Render(stats.FormatDuration(tracker.Current)),
+		label.Render("avg") + " " + value.Render(stats.FormatDuration(tracker.Avg())),
+		label.Render("best") + " " + value.Render(stats.FormatDuration(tracker.Min)),
+		label.Render("worst") + " " + value.Render(stats.FormatDuration(tracker.Max)),
+		label.Render("jitter") + " " + value.Render(stats.FormatDuration(tracker.Jitter())),
+	}
+	return strings.Join(parts, "  ")
 }
 
 func renderStatusBadge(status string, color lipgloss.Color) string {
@@ -77,7 +92,7 @@ func renderFooter(tracker stats.Tracker) string {
 	if !tracker.LastReply.IsZero() {
 		age = time.Since(tracker.LastReply).Round(time.Second).String() + " ago"
 	}
-	line := fmt.Sprintf("last reply %s  loss %.1f%%  timeouts %d", age, tracker.LossPct(), tracker.Timeouts)
+	line := fmt.Sprintf("last reply %s  sent %d  recv %d  loss %.1f%%  timeouts %d", age, tracker.Sent, tracker.Received, tracker.LossPct(), tracker.Timeouts)
 	if tracker.LastError != "" {
 		line = fmt.Sprintf("%s  note %s", line, tracker.LastError)
 	}
@@ -93,7 +108,9 @@ func renderGraph(tracker stats.Tracker, width int, height int, color lipgloss.Co
 	}
 
 	gridStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#334155"))
-	barStyle := lipgloss.NewStyle().Foreground(color)
+	fillStyle := lipgloss.NewStyle().Foreground(color)
+	pointStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#E0F2FE"))
+	lastPointStyle := lipgloss.NewStyle().Bold(true).Foreground(color)
 	timeoutStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#F87171")).Bold(true)
 	labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#64748B"))
 
@@ -103,6 +120,7 @@ func renderGraph(tracker stats.Tracker, width int, height int, color lipgloss.Co
 	}
 	axisMax := tracker.AxisMax()
 	axisMaxMs := float64(axisMax) / float64(time.Millisecond)
+	levels := sampleLevels(samples, height, axisMaxMs)
 
 	rows := make([]string, 0, height)
 	for row := 0; row < height; row++ {
@@ -125,21 +143,25 @@ func renderGraph(tracker stats.Tracker, width int, height int, color lipgloss.Co
 			cell := gridRune(row, col, height)
 			cellStyle := gridStyle
 			if col >= width-len(samples) {
-				sample := samples[col-(width-len(samples))]
+				sampleIndex := col - (width - len(samples))
+				sample := samples[sampleIndex]
 				if sample.Timeout {
 					if row == height-1 {
 						cell = "×"
 						cellStyle = timeoutStyle
 					}
 				} else if sample.RTT > 0 {
-					normalized := float64(sample.RTT) / float64(time.Millisecond) / axisMaxMs
-					barHeight := int(math.Round(normalized * float64(height)))
-					if barHeight < 1 {
-						barHeight = 1
-					}
-					if height-row <= barHeight {
-						cell = "█"
-						cellStyle = barStyle
+					level := levels[sampleIndex]
+					switch {
+					case row == level && sampleIndex == len(samples)-1:
+						cell = "◉"
+						cellStyle = lastPointStyle
+					case row == level:
+						cell = "●"
+						cellStyle = pointStyle
+					case row > level:
+						cell = "▄"
+						cellStyle = fillStyle
 					}
 				}
 			}
@@ -150,19 +172,110 @@ func renderGraph(tracker stats.Tracker, width int, height int, color lipgloss.Co
 	return strings.Join(rows, "\n")
 }
 
+func sampleLevels(samples []stats.Sample, height int, axisMaxMs float64) []int {
+	levels := make([]int, len(samples))
+	for i, sample := range samples {
+		if sample.Timeout || sample.RTT <= 0 {
+			levels[i] = height - 1
+			continue
+		}
+		normalized := float64(sample.RTT) / float64(time.Millisecond) / axisMaxMs
+		if normalized < 0 {
+			normalized = 0
+		}
+		if normalized > 1 {
+			normalized = 1
+		}
+		level := height - 1 - int(math.Round(normalized*float64(height-1)))
+		if level < 0 {
+			level = 0
+		}
+		if level >= height {
+			level = height - 1
+		}
+		levels[i] = level
+	}
+	return levels
+}
+
 func gridRune(row int, col int, height int) string {
-	horizontal := row == height-1 || row == height/2
+	horizontal := row == height-1 || row == height/2 || row == 0
 	vertical := col%5 == 0
 	switch {
 	case horizontal && vertical:
 		return "┼"
 	case horizontal:
+		if row == 0 {
+			return "╌"
+		}
 		return "─"
 	case vertical:
 		return "┊"
 	default:
 		return " "
 	}
+}
+
+func renderFlow(tracker stats.Tracker, width int, color lipgloss.Color) string {
+	if width < 24 {
+		width = 24
+	}
+
+	subtle := lipgloss.NewStyle().Foreground(lipgloss.Color("#64748B"))
+	good := lipgloss.NewStyle().Bold(true).Foreground(color)
+	bad := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#F87171"))
+	neutral := lipgloss.NewStyle().Foreground(lipgloss.Color("#CBD5E1"))
+
+	txIcon := "▷"
+	rxIcon := "○"
+	rxStyle := neutral
+	if time.Since(tracker.LastEventAt) < 600*time.Millisecond {
+		switch tracker.LastEventKind {
+		case 0:
+			rxIcon = "◉"
+			rxStyle = good
+		case 1:
+			rxIcon = "×"
+			rxStyle = bad
+		}
+	}
+
+	recent := recentPackets(tracker, 12, color)
+	left := subtle.Render(fmt.Sprintf("tx %04d", tracker.Sent))
+	right := subtle.Render(fmt.Sprintf("rx %04d", tracker.Received))
+	rail := good.Render(txIcon) + subtle.Render("═══") + rxStyle.Render(rxIcon)
+	line := lipgloss.JoinHorizontal(lipgloss.Center, left, "  ", rail, "  ", right)
+	if recent != "" {
+		line = lipgloss.JoinHorizontal(lipgloss.Center, line, "  ", subtle.Render("recent"), " ", recent)
+	}
+	return line
+}
+
+func recentPackets(tracker stats.Tracker, count int, color lipgloss.Color) string {
+	if count <= 0 || len(tracker.History) == 0 {
+		return ""
+	}
+	if len(tracker.History) < count {
+		count = len(tracker.History)
+	}
+
+	good := lipgloss.NewStyle().Foreground(color)
+	bad := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#F87171"))
+	last := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#E0F2FE"))
+
+	var out strings.Builder
+	window := tracker.History[len(tracker.History)-count:]
+	for i, sample := range window {
+		switch {
+		case sample.Timeout:
+			out.WriteString(bad.Render("×"))
+		case i == len(window)-1:
+			out.WriteString(last.Render("◉"))
+		default:
+			out.WriteString(good.Render("•"))
+		}
+	}
+	return out.String()
 }
 
 func hash(text string) int {

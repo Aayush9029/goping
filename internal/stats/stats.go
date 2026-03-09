@@ -30,6 +30,8 @@ type Tracker struct {
 	History             []Sample
 	Capacity            int
 	ConsecutiveTimeouts int
+	LastEventAt         time.Time
+	LastEventKind       ping.EventKind
 	sumRTT              time.Duration
 	prevRTT             time.Duration
 	jitterSum           time.Duration
@@ -61,6 +63,8 @@ func (t *Tracker) Apply(event ping.Event) {
 			t.Addr = event.Addr
 		}
 	case ping.EventReply:
+		t.LastEventAt = event.At
+		t.LastEventKind = event.Kind
 		t.Received++
 		t.Current = event.RTT
 		t.LastReply = event.At
@@ -84,11 +88,15 @@ func (t *Tracker) Apply(event ping.Event) {
 		t.prevRTT = event.RTT
 		t.appendSample(Sample{RTT: event.RTT, Recorded: event.At})
 	case ping.EventTimeout:
+		t.LastEventAt = event.At
+		t.LastEventKind = event.Kind
 		t.Timeouts++
 		t.LastError = strings.TrimSpace(event.Line)
 		t.ConsecutiveTimeouts++
 		t.appendSample(Sample{Timeout: true, Recorded: event.At})
 	case ping.EventError:
+		t.LastEventAt = event.At
+		t.LastEventKind = event.Kind
 		t.LastError = strings.TrimSpace(event.Line)
 	}
 }
