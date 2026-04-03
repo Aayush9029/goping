@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 
@@ -83,7 +84,7 @@ func (m Model) renderViewport() string {
 
 	lines := make([]string, 0, vpH)
 	for i := start; i < end; i++ {
-		lines = append(lines, formatEvent(m.events[i], multi, colorMap, padW))
+		lines = append(lines, formatEvent(m.events[i], multi, colorMap, padW, m.trackers))
 	}
 
 	// Pad top with blank lines when there aren't enough events yet.
@@ -143,7 +144,7 @@ func (m Model) renderHelp() string {
 	return help
 }
 
-func formatEvent(event ping.Event, multi bool, colorMap map[string]lipgloss.Color, padW int) string {
+func formatEvent(event ping.Event, multi bool, colorMap map[string]lipgloss.Color, padW int, trackers map[string]*stats.Tracker) string {
 	var prefix string
 	if multi {
 		color := colorMap[event.Target]
@@ -157,10 +158,11 @@ func formatEvent(event ping.Event, multi bool, colorMap map[string]lipgloss.Colo
 		if addr == "" {
 			addr = event.Target
 		}
+		timeStyle := rttStyle(event.RTT, trackers[event.Target])
 		return prefix +
 			textStyle.Render(fmt.Sprintf("%d bytes from %s:", event.Bytes, addr)) +
 			"  " + dimStyle.Render("seq=") + textStyle.Render(fmt.Sprintf("%d", event.Seq)) +
-			"  " + dimStyle.Render("time=") + goodStyle.Render(stats.FormatDuration(event.RTT))
+			"  " + dimStyle.Render("time=") + timeStyle.Render(stats.FormatDuration(event.RTT))
 
 	case ping.EventTimeout:
 		seq := ""
@@ -174,6 +176,26 @@ func formatEvent(event ping.Event, multi bool, colorMap map[string]lipgloss.Colo
 
 	default:
 		return ""
+	}
+}
+
+// rttStyle picks green/yellow/red relative to the target's running average.
+// Green: at or below avg. Yellow: above avg but ≤ 2× avg. Red: above 2× avg.
+func rttStyle(rtt time.Duration, tracker *stats.Tracker) lipgloss.Style {
+	if tracker == nil || tracker.Received < 3 {
+		return goodStyle // not enough data yet
+	}
+	avg := tracker.Avg()
+	if avg <= 0 {
+		return goodStyle
+	}
+	switch {
+	case rtt <= avg:
+		return goodStyle
+	case rtt <= avg*2:
+		return warnStyle
+	default:
+		return badStyle
 	}
 }
 
