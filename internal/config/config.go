@@ -26,8 +26,7 @@ type Config struct {
 	ForceColor  bool
 	IPv4        bool
 	IPv6        bool
-	GraphHeight int
-	Version     string
+	Version string
 	IsTTY       bool
 }
 
@@ -36,8 +35,7 @@ func Parse(args []string, version string, stdout *os.File) (Config, error) {
 		Interval:    time.Second,
 		Timeout:     3 * time.Second,
 		Buffer:      60,
-		GraphHeight: 8,
-		Version:     version,
+		Version: version,
 		IsTTY:       term.IsTerminal(int(stdout.Fd())),
 	}
 
@@ -56,8 +54,6 @@ func Parse(args []string, version string, stdout *os.File) (Config, error) {
 	fs.BoolVar(&cfg.ForceColor, "color", false, "force ANSI color")
 	fs.BoolVar(&cfg.IPv4, "4", false, "resolve targets as IPv4")
 	fs.BoolVar(&cfg.IPv6, "6", false, "resolve targets as IPv6")
-	fs.IntVar(&cfg.GraphHeight, "graph-height", cfg.GraphHeight, "rows per graph in the TUI")
-
 	var showHelp bool
 	var showVersion bool
 	fs.BoolVar(&showHelp, "help", false, "show help")
@@ -82,9 +78,6 @@ func Parse(args []string, version string, stdout *os.File) (Config, error) {
 	}
 	if cfg.Buffer < 10 {
 		return Config{}, errors.New("buffer must be at least 10")
-	}
-	if cfg.GraphHeight < 4 {
-		return Config{}, errors.New("graph-height must be at least 4")
 	}
 	if cfg.Interval <= 0 {
 		return Config{}, errors.New("interval must be positive")
@@ -147,7 +140,6 @@ func printUsage(w io.Writer, version string) {
 	fmt.Fprintln(w, "  -c, --count <n>              Stop after n probes per target")
 	fmt.Fprintln(w, "      --duration <duration>    Stop after this amount of time")
 	fmt.Fprintln(w, "      --plain                  Disable the TUI")
-	fmt.Fprintln(w, "      --graph-height <rows>    TUI graph height (default: 8)")
 	fmt.Fprintln(w, "      --color                  Force ANSI color")
 	fmt.Fprintln(w, "      --no-color               Disable ANSI color")
 	fmt.Fprintln(w, "  -4                           Resolve targets as IPv4")

@@ -2,300 +2,202 @@ package tui
 
 import (
 	"fmt"
-	"math"
+	"sort"
 	"strings"
-	"time"
 
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/Aayush9029/goping/internal/ping"
 	"github.com/Aayush9029/goping/internal/stats"
 )
 
-var panelColors = []lipgloss.Color{
-	lipgloss.Color("#38BDF8"),
-	lipgloss.Color("#4ADE80"),
-	lipgloss.Color("#F59E0B"),
-	lipgloss.Color("#F472B6"),
-	lipgloss.Color("#A78BFA"),
-	lipgloss.Color("#22D3EE"),
+var targetColors = []lipgloss.Color{
+	"#38BDF8",
+	"#4ADE80",
+	"#F59E0B",
+	"#F472B6",
+	"#A78BFA",
+	"#22D3EE",
 }
 
-func renderPanel(tracker stats.Tracker, width int, graphHeight int) string {
-	color := panelColors[int(math.Abs(float64(hash(tracker.Target))))%len(panelColors)]
-	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(color)
-	subtle := lipgloss.NewStyle().Foreground(lipgloss.Color("#94A3B8"))
+var (
+	dimStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#64748B"))
+	textStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#CBD5E1"))
+	goodStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#4ADE80"))
+	warnStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FBBF24"))
+	badStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#F87171"))
+	boldStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#E2E8F0"))
+)
 
-	header := titleStyle.Render(tracker.Target)
-	status := renderStatusBadge(tracker.Status(), color)
-	meta := subtle.Render(renderMeta(tracker))
-	flow := renderFlow(tracker, width-4, color)
-	statLine := renderStatLine(tracker)
-	graph := renderGraph(tracker, width-4, graphHeight, color)
-
-	body := strings.Join([]string{
-		lipgloss.JoinHorizontal(lipgloss.Center, header, " ", status),
-		meta,
-		flow,
-		statLine,
-		graph,
-		renderFooter(tracker),
-	}, "\n")
-
-	return lipgloss.NewStyle().
-		Width(width).
-		Padding(0, 1).
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(color).
-		Render(body)
+func (m Model) View() string {
+	if m.width == 0 {
+		return ""
+	}
+	return m.renderHeader() + "\n\n" +
+		m.renderViewport() + "\n\n" +
+		m.renderStats() + "\n" +
+		m.renderHelp()
 }
 
-func renderMeta(tracker stats.Tracker) string {
-	if tracker.Addr == "" || tracker.Addr == tracker.Target {
-		return fmt.Sprintf("target %s", tracker.Target)
-	}
-	return fmt.Sprintf("target %s  resolved %s", tracker.Target, tracker.Addr)
-}
+func (m Model) renderHeader() string {
+	title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#7DD3FC"))
+	interval := dimStyle.Render("every " + m.cfg.Interval.String())
 
-func renderStatLine(tracker stats.Tracker) string {
-	label := lipgloss.NewStyle().Foreground(lipgloss.Color("#64748B"))
-	value := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#E2E8F0"))
-	parts := []string{
-		label.Render("now") + " " + value.Render(stats.FormatDuration(tracker.Current)),
-		label.Render("avg") + " " + value.Render(stats.FormatDuration(tracker.Avg())),
-		label.Render("best") + " " + value.Render(stats.FormatDuration(tracker.Min)),
-		label.Render("worst") + " " + value.Render(stats.FormatDuration(tracker.Max)),
-		label.Render("jitter") + " " + value.Render(stats.FormatDuration(tracker.Jitter())),
-	}
-	return strings.Join(parts, "  ")
-}
-
-func renderStatusBadge(status string, color lipgloss.Color) string {
-	background := lipgloss.Color("#1E293B")
-	switch status {
-	case "online":
-		background = lipgloss.Color("#052E1A")
-	case "degraded":
-		background = lipgloss.Color("#3F2A04")
-	case "down":
-		background = lipgloss.Color("#3F1111")
-	}
-	return lipgloss.NewStyle().
-		Foreground(color).
-		Background(background).
-		Padding(0, 1).
-		Render(status)
-}
-
-func renderFooter(tracker stats.Tracker) string {
-	subtle := lipgloss.NewStyle().Foreground(lipgloss.Color("#94A3B8"))
-	age := "-"
-	if !tracker.LastReply.IsZero() {
-		age = time.Since(tracker.LastReply).Round(time.Second).String() + " ago"
-	}
-	line := fmt.Sprintf("last reply %s  sent %d  recv %d  loss %.1f%%  timeouts %d", age, tracker.Sent, tracker.Received, tracker.LossPct(), tracker.Timeouts)
-	if tracker.LastError != "" {
-		line = fmt.Sprintf("%s  note %s", line, tracker.LastError)
-	}
-	return subtle.Render(truncate(line, 80))
-}
-
-func renderGraph(tracker stats.Tracker, width int, height int, color lipgloss.Color) string {
-	if width < 16 {
-		width = 16
-	}
-	if height < 4 {
-		height = 4
-	}
-
-	gridStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#334155"))
-	fillStyle := lipgloss.NewStyle().Foreground(color)
-	pointStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#E0F2FE"))
-	lastPointStyle := lipgloss.NewStyle().Bold(true).Foreground(color)
-	timeoutStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#F87171")).Bold(true)
-	labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#64748B"))
-
-	samples := tracker.History
-	if len(samples) > width {
-		samples = samples[len(samples)-width:]
-	}
-	axisMax := tracker.AxisMax()
-	axisMaxMs := float64(axisMax) / float64(time.Millisecond)
-	levels := sampleLevels(samples, height, axisMaxMs)
-
-	rows := make([]string, 0, height)
-	for row := 0; row < height; row++ {
-		var label string
-		switch row {
-		case 0:
-			label = fmt.Sprintf("%6s", stats.FormatDuration(axisMax))
-		case height / 2:
-			label = fmt.Sprintf("%6s", stats.FormatDuration(axisMax/2))
-		case height - 1:
-			label = fmt.Sprintf("%6s", "0ms")
-		default:
-			label = "      "
+	if len(m.order) == 1 {
+		target := m.order[0]
+		tracker := m.trackers[target]
+		addr := ""
+		if tracker != nil && tracker.Addr != "" && tracker.Addr != target {
+			addr = " (" + tracker.Addr + ")"
 		}
-
-		var line strings.Builder
-		line.WriteString(labelStyle.Render(label))
-		line.WriteString(" ")
-		for col := 0; col < width; col++ {
-			cell := gridRune(row, col, height)
-			cellStyle := gridStyle
-			if col >= width-len(samples) {
-				sampleIndex := col - (width - len(samples))
-				sample := samples[sampleIndex]
-				if sample.Timeout {
-					if row == height-1 {
-						cell = "×"
-						cellStyle = timeoutStyle
-					}
-				} else if sample.RTT > 0 {
-					level := levels[sampleIndex]
-					switch {
-					case row == level && sampleIndex == len(samples)-1:
-						cell = "◉"
-						cellStyle = lastPointStyle
-					case row == level:
-						cell = "●"
-						cellStyle = pointStyle
-					case row > level:
-						cell = "▄"
-						cellStyle = fillStyle
-					}
-				}
-			}
-			line.WriteString(cellStyle.Render(cell))
-		}
-		rows = append(rows, line.String())
+		return title.Render("goping") + " " + target + addr + " " + interval
 	}
-	return strings.Join(rows, "\n")
+
+	return title.Render("goping") + " " + strings.Join(m.order, ", ") + " " + interval
 }
 
-func sampleLevels(samples []stats.Sample, height int, axisMaxMs float64) []int {
-	levels := make([]int, len(samples))
-	for i, sample := range samples {
-		if sample.Timeout || sample.RTT <= 0 {
-			levels[i] = height - 1
+func (m Model) renderViewport() string {
+	vpH := m.viewportHeight()
+
+	if len(m.events) == 0 {
+		lines := make([]string, vpH)
+		lines[0] = dimStyle.Render("waiting for reply...")
+		return strings.Join(lines, "\n")
+	}
+
+	multi := len(m.order) > 1
+	colorMap := m.targetColorMap()
+	padW := 0
+	if multi {
+		padW = m.maxTargetLen()
+	}
+
+	end := len(m.events) - m.offset
+	if end < 0 {
+		end = 0
+	}
+	start := end - vpH
+	if start < 0 {
+		start = 0
+	}
+
+	lines := make([]string, 0, vpH)
+	for i := start; i < end; i++ {
+		lines = append(lines, formatEvent(m.events[i], multi, colorMap, padW))
+	}
+
+	// Pad top with blank lines when there aren't enough events yet.
+	for len(lines) < vpH {
+		lines = append([]string{""}, lines...)
+	}
+
+	return strings.Join(lines, "\n")
+}
+
+func (m Model) renderStats() string {
+	colorMap := m.targetColorMap()
+	order := stableOrder(m.order)
+	lines := make([]string, 0, len(order))
+
+	for _, target := range order {
+		tracker := m.trackers[target]
+		if tracker == nil {
 			continue
 		}
-		normalized := float64(sample.RTT) / float64(time.Millisecond) / axisMaxMs
-		if normalized < 0 {
-			normalized = 0
-		}
-		if normalized > 1 {
-			normalized = 1
-		}
-		level := height - 1 - int(math.Round(normalized*float64(height-1)))
-		if level < 0 {
-			level = 0
-		}
-		if level >= height {
-			level = height - 1
-		}
-		levels[i] = level
-	}
-	return levels
-}
 
-func gridRune(row int, col int, height int) string {
-	horizontal := row == height-1 || row == height/2 || row == 0
-	vertical := col%5 == 0
-	switch {
-	case horizontal && vertical:
-		return "┼"
-	case horizontal:
-		if row == 0 {
-			return "╌"
-		}
-		return "─"
-	case vertical:
-		return "┊"
-	default:
-		return " "
-	}
-}
+		color := colorMap[target]
+		name := lipgloss.NewStyle().Bold(true).Foreground(color).Render(target)
 
-func renderFlow(tracker stats.Tracker, width int, color lipgloss.Color) string {
-	if width < 24 {
-		width = 24
-	}
-
-	subtle := lipgloss.NewStyle().Foreground(lipgloss.Color("#64748B"))
-	good := lipgloss.NewStyle().Bold(true).Foreground(color)
-	bad := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#F87171"))
-	neutral := lipgloss.NewStyle().Foreground(lipgloss.Color("#CBD5E1"))
-
-	txIcon := "▷"
-	rxIcon := "○"
-	rxStyle := neutral
-	if time.Since(tracker.LastEventAt) < 600*time.Millisecond {
-		switch tracker.LastEventKind {
-		case 0:
-			rxIcon = "◉"
-			rxStyle = good
-		case 1:
-			rxIcon = "×"
-			rxStyle = bad
-		}
-	}
-
-	recent := recentPackets(tracker, 12, color)
-	left := subtle.Render(fmt.Sprintf("tx %04d", tracker.Sent))
-	right := subtle.Render(fmt.Sprintf("rx %04d", tracker.Received))
-	rail := good.Render(txIcon) + subtle.Render("═══") + rxStyle.Render(rxIcon)
-	line := lipgloss.JoinHorizontal(lipgloss.Center, left, "  ", rail, "  ", right)
-	if recent != "" {
-		line = lipgloss.JoinHorizontal(lipgloss.Center, line, "  ", subtle.Render("recent"), " ", recent)
-	}
-	return line
-}
-
-func recentPackets(tracker stats.Tracker, count int, color lipgloss.Color) string {
-	if count <= 0 || len(tracker.History) == 0 {
-		return ""
-	}
-	if len(tracker.History) < count {
-		count = len(tracker.History)
-	}
-
-	good := lipgloss.NewStyle().Foreground(color)
-	bad := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#F87171"))
-	last := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#E0F2FE"))
-
-	var out strings.Builder
-	window := tracker.History[len(tracker.History)-count:]
-	for i, sample := range window {
+		loss := tracker.LossPct()
+		var lossVal string
 		switch {
-		case sample.Timeout:
-			out.WriteString(bad.Render("×"))
-		case i == len(window)-1:
-			out.WriteString(last.Render("◉"))
+		case loss == 0:
+			lossVal = goodStyle.Render(fmt.Sprintf("%.1f%%", loss))
+		case loss < 10:
+			lossVal = warnStyle.Render(fmt.Sprintf("%.1f%%", loss))
 		default:
-			out.WriteString(good.Render("•"))
+			lossVal = badStyle.Render(fmt.Sprintf("%.1f%%", loss))
 		}
+
+		recv := fmt.Sprintf("%d/%d", tracker.Received, tracker.Sent)
+		parts := []string{
+			dimStyle.Render("──") + " " + name,
+			dimStyle.Render("avg ") + boldStyle.Render(stats.FormatDuration(tracker.Avg())),
+			dimStyle.Render("min ") + boldStyle.Render(stats.FormatDuration(tracker.Min)),
+			dimStyle.Render("max ") + boldStyle.Render(stats.FormatDuration(tracker.Max)),
+			dimStyle.Render("jitter ") + boldStyle.Render(stats.FormatDuration(tracker.Jitter())),
+			dimStyle.Render("loss ") + lossVal,
+			dimStyle.Render("recv ") + boldStyle.Render(recv),
+		}
+		lines = append(lines, strings.Join(parts, "  "))
 	}
-	return out.String()
+
+	return strings.Join(lines, "\n")
 }
 
-func hash(text string) int {
-	value := 0
-	for _, r := range text {
-		value = value*31 + int(r)
+func (m Model) renderHelp() string {
+	help := dimStyle.Render("q quit  ↑↓ scroll")
+	if m.offset > 0 {
+		help += "  " + dimStyle.Render(fmt.Sprintf("↓ %d below", m.offset))
 	}
-	return value
+	return help
 }
 
-func truncate(text string, width int) string {
-	if width <= 0 {
+func formatEvent(event ping.Event, multi bool, colorMap map[string]lipgloss.Color, padW int) string {
+	var prefix string
+	if multi {
+		color := colorMap[event.Target]
+		nameStyle := lipgloss.NewStyle().Foreground(color)
+		prefix = nameStyle.Render(fmt.Sprintf("%-*s", padW, event.Target)) + "  "
+	}
+
+	switch event.Kind {
+	case ping.EventReply:
+		addr := event.Addr
+		if addr == "" {
+			addr = event.Target
+		}
+		return prefix +
+			textStyle.Render(fmt.Sprintf("%d bytes from %s:", event.Bytes, addr)) +
+			"  " + dimStyle.Render("seq=") + textStyle.Render(fmt.Sprintf("%d", event.Seq)) +
+			"  " + dimStyle.Render("time=") + goodStyle.Render(stats.FormatDuration(event.RTT))
+
+	case ping.EventTimeout:
+		seq := ""
+		if event.Seq >= 0 {
+			seq = "  " + dimStyle.Render("seq=") + textStyle.Render(fmt.Sprintf("%d", event.Seq))
+		}
+		return prefix + badStyle.Render("timeout") + seq
+
+	case ping.EventError:
+		return prefix + badStyle.Render(strings.TrimSpace(event.Line))
+
+	default:
 		return ""
 	}
-	runes := []rune(text)
-	if len(runes) <= width {
-		return text
+}
+
+func (m Model) targetColorMap() map[string]lipgloss.Color {
+	order := stableOrder(m.order)
+	colors := make(map[string]lipgloss.Color, len(order))
+	for i, target := range order {
+		colors[target] = targetColors[i%len(targetColors)]
 	}
-	if width <= 1 {
-		return string(runes[:width])
+	return colors
+}
+
+func (m Model) maxTargetLen() int {
+	n := 0
+	for _, t := range m.order {
+		if len(t) > n {
+			n = len(t)
+		}
 	}
-	return string(runes[:width-1]) + "…"
+	return n
+}
+
+func stableOrder(items []string) []string {
+	out := append([]string(nil), items...)
+	sort.Strings(out)
+	return out
 }

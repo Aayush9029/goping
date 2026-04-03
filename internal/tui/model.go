@@ -2,13 +2,9 @@ package tui
 
 import (
 	"context"
-	"fmt"
-	"sort"
-	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 
 	"github.com/Aayush9029/goping/internal/config"
 	"github.com/Aayush9029/goping/internal/ping"
@@ -16,7 +12,6 @@ import (
 )
 
 type streamClosedMsg struct{}
-type tickMsg time.Time
 
 type Model struct {
 	cfg      config.Config
@@ -28,6 +23,8 @@ type Model struct {
 	height   int
 	started  time.Time
 	closed   bool
+	events   []ping.Event
+	offset   int // lines scrolled up from bottom; 0 = follow latest
 }
 
 func NewModel(cfg config.Config, stream <-chan ping.Event, cancel context.CancelFunc) Model {
@@ -46,7 +43,7 @@ func NewModel(cfg config.Config, stream <-chan ping.Event, cancel context.Cancel
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(waitForEvent(m.stream), tick())
+	return waitForEvent(m.stream)
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -63,33 +60,63 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.order = append(m.order, msg.Target)
 		}
 		tracker.Apply(msg)
+		if msg.Kind == ping.EventReply || msg.Kind == ping.EventTimeout || msg.Kind == ping.EventError {
+			m.events = append(m.events, msg)
+			maxEvents := m.cfg.Buffer * max(len(m.order), 1)
+			if maxEvents < 200 {
+				maxEvents = 200
+			}
+			if len(m.events) > maxEvents {
+				m.events = m.events[len(m.events)-maxEvents:]
+			}
+		}
 		return m, waitForEvent(m.stream)
 	case streamClosedMsg:
 		m.closed = true
 		return m, tea.Quit
-	case tickMsg:
-		return m, tick()
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c", "q", "esc":
 			m.cancel()
 			return m, tea.Quit
+		case "up", "k":
+			ceiling := len(m.events) - m.viewportHeight()
+			if ceiling < 0 {
+				ceiling = 0
+			}
+			if m.offset < ceiling {
+				m.offset++
+			}
+			return m, nil
+		case "down", "j":
+			if m.offset > 0 {
+				m.offset--
+			}
+			return m, nil
+		case "G", "end":
+			m.offset = 0
+			return m, nil
+		case "g", "home":
+			ceiling := len(m.events) - m.viewportHeight()
+			if ceiling < 0 {
+				ceiling = 0
+			}
+			m.offset = ceiling
+			return m, nil
 		}
 	}
 	return m, nil
 }
 
-func (m Model) View() string {
-	if m.width == 0 {
-		return "Loading goping..."
+// viewportHeight returns lines available for ping output.
+// Layout: header(1) + blank(1) + viewport(?) + blank(1) + stats(nTargets) + help(1)
+func (m Model) viewportHeight() int {
+	chrome := 4 + len(m.order)
+	h := m.height - chrome
+	if h < 1 {
+		h = 1
 	}
-
-	header := m.renderHeader()
-	panels := m.renderPanels()
-	footer := lipgloss.NewStyle().Foreground(lipgloss.Color("#94A3B8")).Render("q quit  ctrl+c quit  plain mode: goping --plain host")
-
-	content := []string{header, panels, footer}
-	return strings.Join(content, "\n\n")
+	return h
 }
 
 func waitForEvent(stream <-chan ping.Event) tea.Cmd {
@@ -100,87 +127,4 @@ func waitForEvent(stream <-chan ping.Event) tea.Cmd {
 		}
 		return event
 	}
-}
-
-func tick() tea.Cmd {
-	return tea.Tick(250*time.Millisecond, func(t time.Time) tea.Msg {
-		return tickMsg(t)
-	})
-}
-
-func (m Model) renderHeader() string {
-	title := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("#7DD3FC")).
-		Render("goping")
-
-	elapsed := time.Since(m.started).Round(time.Second)
-	if elapsed < 0 {
-		elapsed = 0
-	}
-
-	statusParts := []string{
-		fmt.Sprintf("%d targets", len(m.order)),
-		fmt.Sprintf("interval %s", m.cfg.Interval),
-		fmt.Sprintf("buffer %d", m.cfg.Buffer),
-		fmt.Sprintf("elapsed %s", elapsed),
-	}
-	if m.cfg.Duration > 0 {
-		remaining := m.cfg.Duration - time.Since(m.started)
-		if remaining < 0 {
-			remaining = 0
-		}
-		statusParts = append(statusParts, fmt.Sprintf("remaining %s", remaining.Round(time.Second)))
-	}
-
-	line := lipgloss.NewStyle().Foreground(lipgloss.Color("#CBD5E1")).Render(strings.Join(statusParts, "  •  "))
-	return title + "\n" + line
-}
-
-func (m Model) renderPanels() string {
-	if len(m.order) == 0 {
-		return ""
-	}
-
-	width := max(44, m.width-4)
-	cols := 1
-	if width >= 120 && len(m.order) > 1 {
-		cols = 2
-	}
-	panelWidth := (width - ((cols - 1) * 2)) / cols
-
-	var panels []string
-	for _, target := range stableOrder(m.order) {
-		tracker := m.trackers[target]
-		if tracker == nil {
-			continue
-		}
-		panels = append(panels, renderPanel(*tracker, panelWidth, m.cfg.GraphHeight))
-	}
-	return lipgloss.JoinVertical(lipgloss.Left, chunkPanels(panels, cols)...)
-}
-
-func chunkPanels(panels []string, cols int) []string {
-	var rows []string
-	for i := 0; i < len(panels); i += cols {
-		end := i + cols
-		if end > len(panels) {
-			end = len(panels)
-		}
-		rows = append(rows, lipgloss.JoinHorizontal(lipgloss.Top, panels[i:end]...))
-	}
-	return rows
-}
-
-func stableOrder(items []string) []string {
-	out := append([]string(nil), items...)
-	sort.Strings(out)
-	return out
-}
-
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
 }
