@@ -158,18 +158,19 @@ func formatEvent(event ping.Event, multi bool, colorMap map[string]lipgloss.Colo
 		if addr == "" {
 			addr = event.Target
 		}
+		timeStr := fmt.Sprintf("%7s", stats.FormatDuration(event.RTT))
 		timeStyle := rttStyle(event.RTT, trackers[event.Target])
 		return prefix +
-			textStyle.Render(fmt.Sprintf("%d bytes from %s:", event.Bytes, addr)) +
-			"  " + dimStyle.Render("seq=") + textStyle.Render(fmt.Sprintf("%d", event.Seq)) +
-			"  " + dimStyle.Render("time=") + timeStyle.Render(stats.FormatDuration(event.RTT))
+			textStyle.Render(fmt.Sprintf("%d bytes from %-15s", event.Bytes, addr)) +
+			"  " + dimStyle.Render("seq=") + textStyle.Render(fmt.Sprintf("%-5d", event.Seq)) +
+			" " + dimStyle.Render("time=") + timeStyle.Render(timeStr)
 
 	case ping.EventTimeout:
 		seq := ""
 		if event.Seq >= 0 {
-			seq = "  " + dimStyle.Render("seq=") + textStyle.Render(fmt.Sprintf("%d", event.Seq))
+			seq = "  " + dimStyle.Render("seq=") + textStyle.Render(fmt.Sprintf("%-5d", event.Seq))
 		}
-		return prefix + badStyle.Render("timeout") + seq
+		return prefix + badStyle.Render("timeout") + strings.Repeat(" ", 19) + seq
 
 	case ping.EventError:
 		return prefix + badStyle.Render(strings.TrimSpace(event.Line))
