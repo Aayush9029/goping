@@ -4,6 +4,10 @@
   <p align="center">Ping with live stats — like <code>ping</code> but with a persistent stats bar.</p>
 </p>
 
+<p align="center">
+  <img src="assets/demo.gif" alt="goping demo" width="800">
+</p>
+
 ## Install
 
 ```bash
